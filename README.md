@@ -1,4 +1,5 @@
-CS 543 UIUC Final Project
+**CS 543 (Computer Vision) UIUC Final Project**
 
-Grabbing game state screenshots from:
-https://www.youtube.com/watch?v=DV4f8MwJ2G0
+Dhruv Agarwal, Advait Patel, Adi Pillai
+
+We propose a pipeline that takes in a video with a top-down view of two humans playing a chess match as input, and outputs an array of FENstrings, which represents the game state and how it changes over time.
