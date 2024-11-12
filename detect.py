@@ -35,28 +35,29 @@ def map_to_chess_notation(row, col, left_white=True):
     return f"{files[col]}{8 - row}"
 
 src_points = np.array([
-    [343, 117],
-    [829, 116],
-    [933, 517],
-    [199, 511]
-], dtype="float32") # change these accordingly
+    [952, 438],
+    [2978, 430],
+    [3455, 2524],
+    [625, 2605]
+], dtype="float32")  # Update these points as needed
 
-
-base_image = load_and_warp('game_images/1.png', src_points)
+base_image = load_and_warp('game_images/1.jpg', src_points)
 base_squares = divide_into_squares(base_image)
 base_descriptors = [[calculate_square_descriptor(square) for square in row] for row in base_squares]
 
-cv2.imshow("Warped Bird's Eye View", base_image)
+cv2.imshow("Warped Base Image", base_image)
 cv2.waitKey(0)
-cv2.destroyAllWindows()
 
 left_white = None
 
-for i in range(2, 4):
-    current_image = load_and_warp(f'game_images/{i}.png', src_points)
+for i in range(2, 7):
+    current_image = load_and_warp(f'game_images/{i}.jpg', src_points)
+    cv2.imshow("Warped Image", current_image)
+    cv2.waitKey(0)
+
     current_squares = divide_into_squares(current_image)
     current_descriptors = [[calculate_square_descriptor(square) for square in row] for row in current_squares]
-    
+
     change_diffs = []
     for row in range(8):
         for col in range(8):
@@ -65,8 +66,8 @@ for i in range(2, 4):
     
     change_diffs.sort(key=lambda x: x[1], reverse=True)
     top_changes = change_diffs[:2]
-    
-    print(f"Top 2 changes in game_images/{i}.png:")
+
+    print(f"Top 2 changes in game_images/{i}.jpg:")
     for change in top_changes:
         square_coord, intensity_change = change
         row, col = square_coord
@@ -74,8 +75,14 @@ for i in range(2, 4):
             left_white = col < 4
             white_side = "left" if left_white else "right"
             print(f"Determined that the {white_side} half is white.")
-        
+
         chess_notation = map_to_chess_notation(row, col, left_white)
         print(f"Square {chess_notation} (Grid: {square_coord}) with intensity change of {intensity_change}")
-    
+
+        square_image = current_squares[row][col]
+        cv2.imshow(f"Changed Square {chess_notation}", square_image)
+        cv2.waitKey(0)  # Show the changed square; press any key to close it and proceed to the next
+
     base_descriptors = current_descriptors
+
+cv2.destroyAllWindows()
