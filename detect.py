@@ -2,20 +2,19 @@ import cv2
 import numpy as np
 import os
 import requests
-import ollama
-from openai import OpenAI
 import base64
-import os
 import concurrent.futures
 import time
+import tkinter as tk
+from tkinter import messagebox
+import random
+import ollama
 
 PIECE_IMAGES = {}
 
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-
-def load_and_warp(image_path, src_points, dst_size=750, expansion_factor=1.08):
+def load_and_warp(image_path, src_points, dst_size=750, expansion_factor=1.2):
     """
-    Create two perspective transforms - normal and expanded
+    Warp the image with two perspectives - normal and expanded for border regions
     Args:
         image_path: Path to the image
         src_points: Corner points of the board
@@ -104,17 +103,10 @@ def divide_into_squares(warped_image, expanded_warped, board_size=8):
             
         squares.append(row)
     return squares
-
-def encode_image(image_path):
-    """Encode image to base64"""
-    with open(image_path, "rb") as image_file:
-        return base64.b64encode(image_file.read()).decode('utf-8')
-
 def detect_piece(img_path):
-    """Use OpenAI to detect chess pieces in an image"""
-    base64_image = encode_image(img_path)
-    prompt = """If the square is empty, respond with the word 'None'. 
-    If there is a piece on the square, respond with the color of the piece, followed by the name of the piece. 
+    """Use Ollama to detect chess pieces in an image"""
+    prompt = """This is a zoomed in image of a square on a chess board. If the square is empty, respond with the word 'None'. 
+    If there is a piece on the square, respond with the color of the piece, followed by a space, followed by the name of the piece. 
     For example, your responses may look like:
     'white rook'
     'black bishop'
@@ -124,35 +116,25 @@ def detect_piece(img_path):
     'This square is empty'
     'Black pawn'
     'There is nothing on this square'"""
+    
+    # response = ollama.chat(
+    #     model='llama3.2-vision:11b',
+    #     messages=[{
+    #         'role': 'user',
+    #         'content': prompt,
+    #         'images': [img_path]
+    #     }]
+    # )
+    pieces = [
+        'white king', 'white queen', 'white rook', 'white bishop', 'white knight', 'white pawn',
+        'black king', 'black queen', 'black rook', 'black bishop', 'black knight', 'black pawn',
+        'none'  
+    ]
 
-    response = client.chat.completions.create(
-        model="gpt-4o",
-        temperature=0,
-        messages=[
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": "This is a zoomed in image of a single square on a chess board." },
-                    {
-                        "type": "image_url",
-                        "image_url": {
-                            "url": f"data:image/jpeg;base64,{base64_image}",
-                        },
-                    },
-                    {"type": "text", "text": prompt}
+    selected_piece = random.choice(pieces)
+    return selected_piece
 
-                ],
-            }
-        ],
-        max_tokens=300,
-    )
-
-    # For debugging/monitoring
-    input_tokens = response.usage.prompt_tokens
-    output_tokens = response.usage.completion_tokens
-    print(f"Input tokens: {input_tokens}, Output tokens: {output_tokens}")
-
-    return response.choices[0].message.content.strip().lower()
+    # return response.message.content.strip().lower()
 
 def piece_to_fen_symbol(piece_str):
     """Convert piece description to FEN symbol"""
@@ -176,52 +158,28 @@ def piece_to_fen_symbol(piece_str):
     return mapping.get(piece_str, "")
 
 def generate_fen_from_predictions(squares_images_paths):
-    # Flatten the 2D list of image paths into 1D for parallel processing
-    all_squares = [(i, j, squares_images_paths[i][j]) 
-                  for i in range(8) 
-                  for j in range(8)]
-    
-    # Function to process a single square
-    def process_square(square_info):
-        row, col, img_path = square_info
-        try:
-            piece_str = detect_piece(img_path)
-            return (row, col, piece_to_fen_symbol(piece_str))
-        except Exception as e:
-            print(f"Error processing square {row},{col}: {str(e)}")
-            return (row, col, "")
-
-    # Process squares in parallel
-    results = []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
-        futures = [executor.submit(process_square, square) for square in all_squares]
-        for future in concurrent.futures.as_completed(futures):
-            results.append(future.result())
-
-    # Sort results back into board order
-    sorted_results = sorted(results)  # Will sort by row, then col
-    board = [['' for _ in range(8)] for _ in range(8)]
-    for row, col, symbol in sorted_results:
-        board[row][col] = symbol
-
-    # Convert board to FEN string
     fen_ranks = []
-    for rank in board:
+    for row in range(8):
+        rank_pieces = []
+        for col in range(8):
+            piece_str = detect_piece(squares_images_paths[row][col])
+            symbol = piece_to_fen_symbol(piece_str)
+            rank_pieces.append(symbol)
+        fen_rank_str = ""
         empty_count = 0
-        rank_str = ""
-        for piece in rank:
-            if piece == "":
+        for s in rank_pieces:
+            if s == "":
                 empty_count += 1
             else:
                 if empty_count > 0:
-                    rank_str += str(empty_count)
+                    fen_rank_str += str(empty_count)
                     empty_count = 0
-                rank_str += piece
+                fen_rank_str += s
         if empty_count > 0:
-            rank_str += str(empty_count)
-        fen_ranks.append(rank_str)
-
-    return "/".join(fen_ranks)
+            fen_rank_str += str(empty_count)
+        fen_ranks.append(fen_rank_str)
+    fen_string = "/".join(fen_ranks)
+    return fen_string
 
 def download_image(url):
     response = requests.get(url, stream=True)
@@ -306,6 +264,50 @@ def draw_chessboard(fen, square_size=80):
                 col_idx += 1
     return board_img
 
+def get_fen():
+    fen_examples = [
+        "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",  # Starting position
+        "rnbq1bnr/pppppppp/8/4k3/8/4K3/PPPPPPPP/RNBQ1BNR w KQ - 0 1",  # Kings in the center
+        "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR b KQkq - 1 1",  # Black to move
+        "r3k2r/pppqppbp/2n1bnp1/3p4/3P4/2N1BNP1/PPPQPPBP/R3K2R w KQkq - 0 10",  # Mid-game position
+        "rnb1kbnr/pppp1ppp/4p3/8/8/4P3/PPPP1PPP/RNB1KBNR w KQkq - 0 1",  # Random valid position
+        "rnbqkb1r/pppppppp/5n2/8/8/5N2/PPPPPPPP/RNBQKB1R w KQkq - 0 1",  # Knights moved
+        "r5rk/5p1p/5R2/4B3/8/8/7P/7K w - - 0 1", # white mate in 3
+        "rnb1kbnr/pppp1ppp/8/4p3/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 2" #white dominating
+    ]
+    return random.choice(fen_examples)
+
+def draw_eval_bar(board_img, eval_score, bar_width=30):
+    board_h, board_w, _ = board_img.shape
+    base_color = (169, 169, 169) 
+    eval_color = (255, 255, 255) 
+
+    bar_img = np.ones((board_h, bar_width, 3), dtype=np.uint8)
+    bar_img[:] = base_color
+
+    eval_normalized = max(min(eval_score, 10), -10) 
+    eval_height = int(((eval_normalized + 10) / 20) * board_h)
+
+    bar_img[board_h - eval_height:, :] = eval_color
+
+    return np.hstack((board_img, bar_img))
+
+
+def draw_arrow(board_img, from_square, to_square, square_size=80, color=(0, 165, 255), thickness=3):
+    from_row, from_col = 8 - int(from_square[1]), ord(from_square[0]) - ord('a')
+    to_row, to_col = 8 - int(to_square[1]), ord(to_square[0]) - ord('a')
+
+
+    from_x = int(from_col * square_size + square_size / 2)
+    from_y = int(from_row * square_size + square_size / 2)
+    to_x = int(to_col * square_size + square_size / 2)
+    to_y = int(to_row * square_size + square_size / 2)
+
+    # Draw arrow
+    cv2.arrowedLine(board_img, (from_x, from_y), (to_x, to_y), color, thickness, tipLength=0.4)
+
+    return board_img
+
 def main():
     # Initialize piece images once at startup
     initialize_piece_images()
@@ -315,23 +317,28 @@ def main():
     
     # Example: Adjust src_points to match your board setup
     src_points = np.array([
-        [255, 970],
-        [3952, 1063],
-        [3946, 4688],
-        [230, 4758]
+        [952, 438],
+        [2978, 430],
+        [3455, 2524],
+        [625, 2605]
     ], dtype="float32")
 
     # Gather all images
     image_directory = "game_images"
-    image_files = sorted([f for f in os.listdir(image_directory) if f.endswith('.png')])
+    image_files = sorted([f for f in os.listdir(image_directory) if f.endswith('.jpg')])
 
     fen_states = []
+    evals = []
+    next_moves = []
     for i, filename in enumerate(image_files, start=1):
         print(f"Processing image {i}/{len(image_files)}: {filename}")
         image_path = os.path.join(image_directory, filename)
+        original_image = cv2.imread(image_path)
+        if original_image is None:
+            raise FileNotFoundError(f"Could not load image at {image_path}")
             
-        warped_image, expanded_warped = load_and_warp(image_path, src_points)
-        squares = divide_into_squares(warped_image, expanded_warped)
+        warped_image, expanded_warped = load_and_warp(image_path, src_points, expansion_factor=1.2)
+        squares = divide_into_squares(warped_image, expanded_warped, src_points)
 
         squares_images_paths = []
         for row_idx, row in enumerate(squares):
@@ -342,18 +349,58 @@ def main():
                 row_paths.append(square_path)
             squares_images_paths.append(row_paths)
 
-        fen = generate_fen_from_predictions(squares_images_paths)
+        # fen = generate_fen_from_predictions(squares_images_paths)
+        fen = get_fen()
         print(f"Generated FEN: {fen}")
         fen_states.append(fen)
 
+        chess_api_url = "https://chess-api.com/v1"
+        depth = 15
+
+        payload = {
+            "fen": fen,
+            "depth": depth
+        }
+        try:
+            response = requests.post(chess_api_url, json=payload)
+            response.raise_for_status()
+            data = response.json()
+            if data.get('type') == 'error':
+                raise Exception(data.get('text'))
+            eval = data.get('eval')
+            move_set = data.get('continuationArr')
+            print(f"Next move: {move_set[0]}")
+            # print(f"Next: {data.get('continuationArr')}")
+
+            next_move = data.get('continuationArr', [])[0] if data.get('continuationArr') else None
+            # print(f"Eval: {eval}")
+            evals.append(eval)
+            next_moves.append(next_move)
+            # print(data)
+        except requests.exceptions.RequestException as e:
+            print(f"Error: {str(e)}")
+
     # Interactive Viewer
     index = 0
+    show_next = False
     while True:
         fen = fen_states[index]
+        eval = evals[index]
         board_img = draw_chessboard(fen, square_size=80)
-        cv2.putText(board_img, fen, (10,30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0,255,0), 2)
+        board_img_with_eval = draw_eval_bar(board_img, eval)
 
-        cv2.imshow("Virtual Chessboard Viewer", board_img)
+        if show_next:
+            next_move = next_moves[index]
+            from_square = next_move[:2]
+            to_square = next_move[2:]
+            board_img_with_eval = draw_arrow(board_img_with_eval, from_square, to_square)
+
+        cv2.putText(board_img_with_eval, f"Eval: {eval}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+        cv2.putText(board_img, fen, (10,30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0,255,0), 2)
+        cv2.imshow("Virtual Chessboard Viewer", board_img_with_eval)
+        
+
+        # cv2.imshow("Virtual Chessboard Viewer", board_img)
         key = cv2.waitKey(0)
         if key == ord('q'): # Quit
             break
@@ -361,6 +408,8 @@ def main():
             index = min(index + 1, len(fen_states)-1)
         elif key == ord('p') or key == 81: # 'p' or left arrow
             index = max(index - 1, 0)
+        elif key == ord('m'):
+            show_next = not show_next
 
     cv2.destroyAllWindows()
     
