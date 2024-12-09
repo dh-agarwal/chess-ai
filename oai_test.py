@@ -41,6 +41,19 @@ def get_chess_piece_response(image_path):
     print(f"Input tokens: {input_tokens}, Output tokens: {output_tokens}")
 
     return response.choices[0]
+import time
+import concurrent.futures
 
-resp = get_chess_piece_response("image copy 2.png")
-print(resp)
+def run_parallel_requests(image_path, num_requests=64):
+    with concurrent.futures.ThreadPoolExecutor() as executor:
+        futures = [executor.submit(get_chess_piece_response, image_path) for _ in range(num_requests)]
+        responses = [future.result() for future in concurrent.futures.as_completed(futures)]
+    return responses
+
+start = time.time()
+responses = run_parallel_requests("image copy 2.png")
+end = time.time()
+
+for resp in responses:
+    print(resp)
+print("time:", end - start)
