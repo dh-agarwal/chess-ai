@@ -68,10 +68,10 @@ def divide_into_squares(warped_image, expanded_warped, board_size=8):
     square_h, square_w = h // board_size, w // board_size
     
     # Calculate different padding sizes for vertical and horizontal
-    regular_vertical_padding = int(square_h * 0.15)    # 50% padding upward
-    regular_horizontal_padding = int(square_w * 0.2)  # 20% padding sideways
-    border_vertical_padding = int(square_h * 0.15)    # 35% padding upward for border
-    border_horizontal_padding = int(square_w * 0.15)  # 15% padding sideways for border
+    regular_vertical_padding = int(square_h * 0.25)    # 50% padding upward
+    regular_horizontal_padding = int(square_w * 0.3)  # 20% padding sideways
+    border_vertical_padding = int(square_h * 0.25)    # 35% padding upward for border
+    border_horizontal_padding = int(square_w * 0.25)  # 15% padding sideways for border
     
     squares = []
     for i in range(board_size):
