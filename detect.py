@@ -3,13 +3,19 @@ import numpy as np
 import os
 import requests
 import ollama
+from openai import OpenAI
+import base64
+import os
+import concurrent.futures
+import time
 
-# Global variable to store piece images
 PIECE_IMAGES = {}
 
-def load_and_warp(image_path, src_points, dst_size=750, expansion_factor=1.2):
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+def load_and_warp(image_path, src_points, dst_size=750, expansion_factor=1.08):
     """
-    Warp the image with two perspectives - normal and expanded for border regions
+    Create two perspective transforms - normal and expanded
     Args:
         image_path: Path to the image
         src_points: Corner points of the board
@@ -19,8 +25,7 @@ def load_and_warp(image_path, src_points, dst_size=750, expansion_factor=1.2):
     image = cv2.imread(image_path)
     if image is None:
         raise FileNotFoundError(f"Could not load image at {image_path}")
-        
-    # Regular warping
+
     dst_points = np.array([
         [0, 0],
         [dst_size, 0],
@@ -30,119 +35,86 @@ def load_and_warp(image_path, src_points, dst_size=750, expansion_factor=1.2):
     transform_matrix = cv2.getPerspectiveTransform(src_points, dst_points)
     warped = cv2.warpPerspective(image, transform_matrix, (dst_size, dst_size))
     
-    # Calculate expanded source points for border regions
+    # Calculate expanded source points by moving each corner outward
     center = np.mean(src_points, axis=0)
     expanded_src_points = np.array([
-        src_points[0] + (src_points[0] - center) * (expansion_factor - 1),
-        src_points[1] + (src_points[1] - center) * (expansion_factor - 1),
-        src_points[2] + (src_points[2] - center) * (expansion_factor - 1),
-        src_points[3] + (src_points[3] - center) * (expansion_factor - 1)
+        # Top corners: expand outward and upward
+        src_points[0] + np.array([(src_points[0][0] - center[0]) * (expansion_factor - 1), 
+                                (src_points[0][1] - center[1]) * (expansion_factor - 1)]),
+        src_points[1] + np.array([(src_points[1][0] - center[0]) * (expansion_factor - 1), 
+                                (src_points[1][1] - center[1]) * (expansion_factor - 1)]),
+        # Bottom corners: expand outward and downward
+        src_points[2] + np.array([(src_points[2][0] - center[0]) * (expansion_factor - 1),
+                                (src_points[2][1] - center[1]) * (expansion_factor - 1)]),
+        src_points[3] + np.array([(src_points[3][0] - center[0]) * (expansion_factor - 1),
+                                (src_points[3][1] - center[1]) * (expansion_factor - 1)])
     ], dtype="float32")
     
-    # Expanded warping (make destination size larger to accommodate expansion)
-    expanded_dst_size = int(dst_size * expansion_factor)
-    offset = (expanded_dst_size - dst_size) // 2
-    expanded_dst_points = np.array([
-        [offset, offset],
-        [offset + dst_size, offset],
-        [offset + dst_size, offset + dst_size],
-        [offset, offset + dst_size]
-    ], dtype="float32")
-    
-    expanded_transform = cv2.getPerspectiveTransform(expanded_src_points, expanded_dst_points)
-    expanded_warped = cv2.warpPerspective(image, expanded_transform, (expanded_dst_size, expanded_dst_size))
+    # Create expanded warped image (same destination size as regular)
+    expanded_transform = cv2.getPerspectiveTransform(expanded_src_points, dst_points)
+    expanded_warped = cv2.warpPerspective(image, expanded_transform, (dst_size, dst_size))
     
     return warped, expanded_warped
 
-def divide_into_squares(warped_image, original_image, src_points, board_size=8):
-    """Extract squares with surrounding context, handling border cases specially.
+def divide_into_squares(warped_image, expanded_warped, board_size=8):
+    """Extract squares from both warped images, using expanded version for border squares.
+    Applies more padding upward and less padding sideways.
     
     Args:
-        warped_image: The perspective-corrected board image
-        original_image: The original uncropped image
-        src_points: The corner points used for perspective transform
+        warped_image: The regular perspective-corrected board image
+        expanded_warped: The expanded perspective-corrected board image
         board_size: Number of squares per side (default 8 for chess)
     """
     h, w = warped_image.shape[:2]
     square_h, square_w = h // board_size, w // board_size
     
-    # Calculate padding size (20% extra)
-    padding = int(square_h * 0.2)
+    # Calculate different padding sizes for vertical and horizontal
+    regular_vertical_padding = int(square_h * 0.15)    # 50% padding upward
+    regular_horizontal_padding = int(square_w * 0.2)  # 20% padding sideways
+    border_vertical_padding = int(square_h * 0.15)    # 35% padding upward for border
+    border_horizontal_padding = int(square_w * 0.15)  # 15% padding sideways for border
     
     squares = []
     for i in range(board_size):
         row = []
         for j in range(board_size):
-            # Calculate base coordinates for square corners (needed for perspective transform)
+            # Determine if this is a border square
+            is_border = (i == 0 or i == board_size-1 or j == 0 or j == board_size-1)
+            
+            # Calculate base coordinates for this square
             y1 = i * square_h
             x1 = j * square_w
             y2 = (i + 1) * square_h
             x2 = (j + 1) * square_w
-
-            # Calculate the center of the square for padding
-            center_y = (i + 0.5) * square_h
-            center_x = (j + 0.5) * square_w
             
-            # Calculate padded square bounds from the center
-            # This ensures equal padding in all directions
-            half_size = (square_h / 2) + padding
+            # Select the appropriate image and padding
+            source_img = expanded_warped if is_border else warped_image
+            vert_padding = border_vertical_padding if is_border else regular_vertical_padding
+            horiz_padding = border_horizontal_padding if is_border else regular_horizontal_padding
             
-            # Calculate padded coordinates
-            padded_y1 = max(0, int(center_y - half_size))
-            padded_x1 = max(0, int(center_x - half_size))
-            padded_y2 = min(h, int(center_y + half_size))
-            padded_x2 = min(w, int(center_x + half_size))
+            # Apply different padding amounts for vertical and horizontal
+            padded_x1 = max(0, x1 - horiz_padding)  # Less left padding
+            padded_x2 = min(w, x2 + horiz_padding)  # Less right padding
+            padded_y1 = max(0, y1 - vert_padding)   # More top padding
+            padded_y2 = y2                          # No bottom padding
             
-            # Extract padded square from warped image
-            square = warped_image[padded_y1:padded_y2, padded_x1:padded_x2]
-            
-            # Check if this is a border square that might need special handling
-            is_border = (i == 0 or i == board_size-1 or j == 0 or j == board_size-1)
-            
-            if is_border:
-                # Calculate the relative position of this square in the original image
-                # This requires transforming the square corners back to the original image
-                square_corners = np.float32([
-                    [x1, y1],
-                    [x2, y1],
-                    [x2, y2],
-                    [x1, y2]
-                ]).reshape(-1, 1, 2)
-                
-                # Create transform matrix from warped to original
-                dst_points = np.array([
-                    [0, 0],
-                    [w, 0],
-                    [w, h],
-                    [0, h]
-                ], dtype="float32")
-                
-                inverse_transform = cv2.getPerspectiveTransform(dst_points, src_points)
-                
-                # Transform square corners to original image coordinates
-                orig_corners = cv2.perspectiveTransform(square_corners, inverse_transform)
-                
-                # Get bounding box in original image
-                x_orig = orig_corners[:, 0, 0]
-                y_orig = orig_corners[:, 0, 1]
-                x_min, x_max = int(max(0, np.min(x_orig))), int(min(original_image.shape[1], np.max(x_orig)))
-                y_min, y_max = int(max(0, np.min(y_orig))), int(min(original_image.shape[0], np.max(y_orig)))
-                
-                # Extract region from original image
-                orig_square = original_image[y_min:y_max, x_min:x_max]
-                
-                # Only use original if it's significantly different in size
-                if orig_square.size > square.size * 1.2:  # 20% larger threshold
-                    square = orig_square
-            
+            # Extract square from appropriate source
+            square = source_img[padded_y1:padded_y2, padded_x1:padded_x2]
             row.append(square)
+            
         squares.append(row)
     return squares
 
+def encode_image(image_path):
+    """Encode image to base64"""
+    with open(image_path, "rb") as image_file:
+        return base64.b64encode(image_file.read()).decode('utf-8')
+
 def detect_piece(img_path):
-    """Use Ollama to detect chess pieces in an image"""
-    prompt = """This is a zoomed in image of a square on a chess board. If the square is empty, respond with the word 'None'. 
-    If there is a piece on the square, respond with the color of the piece, followed by a space, followed by the name of the piece. 
+    """Use OpenAI to detect chess pieces in an image"""
+    base64_image = encode_image(img_path)
+    prompt = """If the square is empty, respond with the word 'None'. 
+    If there is a piece on the square, respond with the color of the piece, followed by the name of the piece. 
     For example, your responses may look like:
     'white rook'
     'black bishop'
@@ -152,16 +124,35 @@ def detect_piece(img_path):
     'This square is empty'
     'Black pawn'
     'There is nothing on this square'"""
-    
-    response = ollama.chat(
-        model='llama3.2-vision:11b',
-        messages=[{
-            'role': 'user',
-            'content': prompt,
-            'images': [img_path]
-        }]
+
+    response = client.chat.completions.create(
+        model="gpt-4o",
+        temperature=0,
+        messages=[
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "This is a zoomed in image of a single square on a chess board." },
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:image/jpeg;base64,{base64_image}",
+                        },
+                    },
+                    {"type": "text", "text": prompt}
+
+                ],
+            }
+        ],
+        max_tokens=300,
     )
-    return response.message.content.strip().lower()
+
+    # For debugging/monitoring
+    input_tokens = response.usage.prompt_tokens
+    output_tokens = response.usage.completion_tokens
+    print(f"Input tokens: {input_tokens}, Output tokens: {output_tokens}")
+
+    return response.choices[0].message.content.strip().lower()
 
 def piece_to_fen_symbol(piece_str):
     """Convert piece description to FEN symbol"""
@@ -185,28 +176,52 @@ def piece_to_fen_symbol(piece_str):
     return mapping.get(piece_str, "")
 
 def generate_fen_from_predictions(squares_images_paths):
+    # Flatten the 2D list of image paths into 1D for parallel processing
+    all_squares = [(i, j, squares_images_paths[i][j]) 
+                  for i in range(8) 
+                  for j in range(8)]
+    
+    # Function to process a single square
+    def process_square(square_info):
+        row, col, img_path = square_info
+        try:
+            piece_str = detect_piece(img_path)
+            return (row, col, piece_to_fen_symbol(piece_str))
+        except Exception as e:
+            print(f"Error processing square {row},{col}: {str(e)}")
+            return (row, col, "")
+
+    # Process squares in parallel
+    results = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+        futures = [executor.submit(process_square, square) for square in all_squares]
+        for future in concurrent.futures.as_completed(futures):
+            results.append(future.result())
+
+    # Sort results back into board order
+    sorted_results = sorted(results)  # Will sort by row, then col
+    board = [['' for _ in range(8)] for _ in range(8)]
+    for row, col, symbol in sorted_results:
+        board[row][col] = symbol
+
+    # Convert board to FEN string
     fen_ranks = []
-    for row in range(8):
-        rank_pieces = []
-        for col in range(8):
-            piece_str = detect_piece(squares_images_paths[row][col])
-            symbol = piece_to_fen_symbol(piece_str)
-            rank_pieces.append(symbol)
-        fen_rank_str = ""
+    for rank in board:
         empty_count = 0
-        for s in rank_pieces:
-            if s == "":
+        rank_str = ""
+        for piece in rank:
+            if piece == "":
                 empty_count += 1
             else:
                 if empty_count > 0:
-                    fen_rank_str += str(empty_count)
+                    rank_str += str(empty_count)
                     empty_count = 0
-                fen_rank_str += s
+                rank_str += piece
         if empty_count > 0:
-            fen_rank_str += str(empty_count)
-        fen_ranks.append(fen_rank_str)
-    fen_string = "/".join(fen_ranks)
-    return fen_string
+            rank_str += str(empty_count)
+        fen_ranks.append(rank_str)
+
+    return "/".join(fen_ranks)
 
 def download_image(url):
     response = requests.get(url, stream=True)
@@ -300,26 +315,23 @@ def main():
     
     # Example: Adjust src_points to match your board setup
     src_points = np.array([
-        [952, 438],
-        [2978, 430],
-        [3455, 2524],
-        [625, 2605]
+        [255, 970],
+        [3952, 1063],
+        [3946, 4688],
+        [230, 4758]
     ], dtype="float32")
 
     # Gather all images
     image_directory = "game_images"
-    image_files = sorted([f for f in os.listdir(image_directory) if f.endswith('.jpg')])
+    image_files = sorted([f for f in os.listdir(image_directory) if f.endswith('.png')])
 
     fen_states = []
     for i, filename in enumerate(image_files, start=1):
         print(f"Processing image {i}/{len(image_files)}: {filename}")
         image_path = os.path.join(image_directory, filename)
-        original_image = cv2.imread(image_path)
-        if original_image is None:
-            raise FileNotFoundError(f"Could not load image at {image_path}")
             
-        warped_image, expanded_warped = load_and_warp(image_path, src_points, expansion_factor=1.2)
-        squares = divide_into_squares(warped_image, expanded_warped, src_points)
+        warped_image, expanded_warped = load_and_warp(image_path, src_points)
+        squares = divide_into_squares(warped_image, expanded_warped)
 
         squares_images_paths = []
         for row_idx, row in enumerate(squares):

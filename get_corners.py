@@ -1,6 +1,6 @@
 import cv2
 
-image = cv2.imread('game_images/1.jpg')
+image = cv2.imread('train_images/1.png')
 points = []
 
 def capture_points(event, x, y, flags, param):
