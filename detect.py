@@ -12,9 +12,9 @@ import ollama
 
 PIECE_IMAGES = {}
 
-def load_and_warp(image_path, src_points, dst_size=750, expansion_factor=1.2):
+def load_and_warp(image_path, src_points, dst_size=750, expansion_factor=1.08):
     """
-    Warp the image with two perspectives - normal and expanded for border regions
+    Create two perspective transforms - normal and expanded
     Args:
         image_path: Path to the image
         src_points: Corner points of the board
@@ -103,6 +103,7 @@ def divide_into_squares(warped_image, expanded_warped, board_size=8):
             
         squares.append(row)
     return squares
+
 def detect_piece(img_path):
     """Use Ollama to detect chess pieces in an image"""
     prompt = """This is a zoomed in image of a square on a chess board. If the square is empty, respond with the word 'None'. 
@@ -285,13 +286,16 @@ def draw_eval_bar(board_img, eval_score, bar_width=30):
     bar_img = np.ones((board_h, bar_width, 3), dtype=np.uint8)
     bar_img[:] = base_color
 
-    eval_normalized = max(min(eval_score, 10), -10) 
-    eval_height = int(((eval_normalized + 10) / 20) * board_h)
-
-    bar_img[board_h - eval_height:, :] = eval_color
+    if eval_score is not None:
+        eval_normalized = max(min(eval_score, 10), -10) 
+        eval_height = int(((eval_normalized + 10) / 20) * board_h)
+        bar_img[board_h - eval_height:, :] = eval_color
+    else:
+        # For None evaluation, show a neutral bar (centered)
+        eval_height = int(board_h / 2)
+        bar_img[board_h - eval_height:, :] = eval_color
 
     return np.hstack((board_img, bar_img))
-
 
 def draw_arrow(board_img, from_square, to_square, square_size=80, color=(0, 165, 255), thickness=3):
     from_row, from_col = 8 - int(from_square[1]), ord(from_square[0]) - ord('a')
@@ -308,6 +312,116 @@ def draw_arrow(board_img, from_square, to_square, square_size=80, color=(0, 165,
 
     return board_img
 
+def detect_first_move_side(base_board, second_board):
+    """
+    Compare base position with second position to determine which side is white.
+    Returns 'left' if white is on the left side, 'right' if on the right.
+    """
+    for i in range(8):
+        for j in range(8):
+            if base_board[i][j] != second_board[i][j]:
+                # Found a move - check which half
+                if j < 4:  # Left half of board
+                    return 'right'  # If piece moved on left, white must be on right
+                else:  # Right half of board
+                    return 'left'  # If piece moved on right, white must be on left
+    
+    return 'right'  # Default if no move detected
+
+def create_board_from_predictions(squares_images_paths):
+    """Create board representation from square images"""
+    all_squares = [(i, j, squares_images_paths[i][j]) 
+                  for i in range(8) 
+                  for j in range(8)]
+    
+    def process_square(square_info):
+        row, col, img_path = square_info
+        try:
+            piece_str = detect_piece(img_path)
+            return (row, col, piece_to_fen_symbol(piece_str))
+        except Exception as e:
+            print(f"Error processing square {row},{col}: {str(e)}")
+            return (row, col, "")
+
+    # Process squares in parallel
+    results = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+        futures = [executor.submit(process_square, square) for square in all_squares]
+        for future in concurrent.futures.as_completed(futures):
+            results.append(future.result())
+
+    # Create board representation
+    board = [['' for _ in range(8)] for _ in range(8)]
+    for row, col, symbol in results:
+        board[row][col] = symbol
+    
+    return board
+
+def generate_fen_from_board(board, white_side='right'):
+    """Generate FEN string with correct orientation"""
+    # If white is on left, flip the board horizontally
+    if white_side == 'left':
+        board = [row[::-1] for row in board]
+    
+    # Process ranks from top to bottom (a8 to h1)
+    fen_ranks = []
+    for rank in board:
+        empty_count = 0
+        rank_str = ""
+        for piece in rank:
+            if piece == "":
+                empty_count += 1
+            else:
+                if empty_count > 0:
+                    rank_str += str(empty_count)
+                    empty_count = 0
+                rank_str += piece
+        if empty_count > 0:
+            rank_str += str(empty_count)
+        fen_ranks.append(rank_str)
+    
+    return ("/".join(fen_ranks)) + " w KQkq - 0 1" # eventually add castling rights, en passant, halfmove clock, fullmove number
+
+def edit_fen_dialog(fen):
+    """Show dialog for user to edit FEN string"""
+    root = tk.Tk()
+    root.withdraw()  # Hide main window
+    
+    dialog = tk.Toplevel(root)
+    dialog.title("Edit FEN String")
+    
+    # Add instructions
+    tk.Label(dialog, text="Invalid FEN string detected. Please edit:").pack(pady=5)
+    
+    # Add text entry
+    entry = tk.Entry(dialog, width=50)
+    entry.insert(0, fen)
+    entry.pack(pady=5)
+    
+    # Variable to store result
+    result = [None]
+    
+    def on_ok():
+        result[0] = entry.get()
+        dialog.destroy()
+        root.destroy()
+        
+    def on_cancel():
+        dialog.destroy()
+        root.destroy()
+    
+    # Add buttons
+    tk.Button(dialog, text="OK", command=on_ok).pack(side=tk.LEFT, padx=5, pady=5)
+    tk.Button(dialog, text="Cancel", command=on_cancel).pack(side=tk.RIGHT, padx=5, pady=5)
+    
+    # Center dialog
+    dialog.geometry("500x150")
+    dialog.transient(root)
+    dialog.grab_set()
+    
+    root.mainloop()
+    return result[0]
+
 def main():
     # Initialize piece images once at startup
     initialize_piece_images()
@@ -315,7 +429,7 @@ def main():
     # Make sure temp_squares directory exists
     os.makedirs("temp_squares", exist_ok=True)
     
-    # Example: Adjust src_points to match your board setup
+    # Board corner coordinates
     src_points = np.array([
         [952, 438],
         [2978, 430],
@@ -323,23 +437,31 @@ def main():
         [625, 2605]
     ], dtype="float32")
 
-    # Gather all images
+    # Process all images
     image_directory = "game_images"
-    image_files = sorted([f for f in os.listdir(image_directory) if f.endswith('.jpg')])
+    image_files = sorted([f for f in os.listdir(image_directory) if f.endswith('.png')])
+
+    # We need at least 2 images
+    if len(image_files) < 2:
+        print("Need at least 2 images to detect white's side")
+        return
 
     fen_states = []
     evals = []
     next_moves = []
+    white_side = None
+    base_board = None
+    
+    # Process all images
     for i, filename in enumerate(image_files, start=1):
         print(f"Processing image {i}/{len(image_files)}: {filename}")
         image_path = os.path.join(image_directory, filename)
-        original_image = cv2.imread(image_path)
-        if original_image is None:
-            raise FileNotFoundError(f"Could not load image at {image_path}")
             
-        warped_image, expanded_warped = load_and_warp(image_path, src_points, expansion_factor=1.2)
-        squares = divide_into_squares(warped_image, expanded_warped, src_points)
+        # Process squares
+        warped_image, expanded_warped = load_and_warp(image_path, src_points)
+        squares = divide_into_squares(warped_image, expanded_warped)
 
+        # Save squares and create paths
         squares_images_paths = []
         for row_idx, row in enumerate(squares):
             row_paths = []
@@ -349,36 +471,82 @@ def main():
                 row_paths.append(square_path)
             squares_images_paths.append(row_paths)
 
-        # fen = generate_fen_from_predictions(squares_images_paths)
-        fen = get_fen()
+        # Create board representation
+        curr_board = create_board_from_predictions(squares_images_paths)
+        
+        # Determine FEN string with proper orientation
+        if i == 1:
+            base_board = curr_board
+            # Save FEN without flipping
+            fen = generate_fen_from_board(curr_board, 'right')
+            fen_states.append(fen)
+        elif i == 2:
+            white_side = detect_first_move_side(base_board, curr_board)
+            print(f"Detected white on {white_side} side")
+            # Update first FEN with correct orientation
+            fen_states[0] = generate_fen_from_board(base_board, white_side)
+            # Add second FEN
+            fen = generate_fen_from_board(curr_board, white_side)
+            fen_states.append(fen)
+        else:
+            # Process remaining images with known orientation
+            fen = generate_fen_from_board(curr_board, white_side)
+            fen_states.append(fen)
+        
         print(f"Generated FEN: {fen}")
-        fen_states.append(fen)
 
+        # Get chess engine analysis
         chess_api_url = "https://chess-api.com/v1"
         depth = 15
-
+        print(fen)
         payload = {
             "fen": fen,
             "depth": depth
         }
         try:
-            response = requests.post(chess_api_url, json=payload)
-            response.raise_for_status()
-            data = response.json()
-            if data.get('type') == 'error':
-                raise Exception(data.get('text'))
-            eval = data.get('eval')
-            move_set = data.get('continuationArr')
-            print(f"Next move: {move_set[0]}")
-            # print(f"Next: {data.get('continuationArr')}")
+            # Only try to get evaluation if FEN seems valid (contains necessary parts)
+            fen_parts = fen.split()
+            if len(fen_parts) >= 6 and all(c in "rnbqkpRNBQKP12345678/- " for c in fen_parts[0]):
+                response = requests.post(chess_api_url, json=payload)
+                response.raise_for_status()
+                data = response.json()
+                if data.get('type') == 'error':
+                    raise Exception(data.get('text'))
 
-            next_move = data.get('continuationArr', [])[0] if data.get('continuationArr') else None
-            # print(f"Eval: {eval}")
-            evals.append(eval)
-            next_moves.append(next_move)
-            # print(data)
+                eval = data.get('eval')
+                move_set = data.get('continuationArr')
+                print(f"Next move: {move_set[0]}")
+                next_move = data.get('continuationArr', [])[0] if data.get('continuationArr') else None
+                evals.append(eval)
+                next_moves.append(next_move)
+            else:
+                print(f"Invalid FEN string detected: {fen}")
+                edited_fen = edit_fen_dialog(fen)
+                if edited_fen:
+                    # Update FEN in states
+                    fen_states[len(fen_states)-1] = edited_fen
+                    # Try evaluation with edited FEN
+                    payload["fen"] = edited_fen
+                    response = requests.post(chess_api_url, json=payload)
+                    response.raise_for_status()
+                    data = response.json()
+                    eval = data.get('eval')
+                    move_set = data.get('continuationArr')
+                    next_move = move_set[0] if move_set else None
+                    evals.append(eval)
+                    next_moves.append(next_move)
+                else:
+                    print("FEN editing cancelled")
+                    evals.append(None)
+                    next_moves.append(None)
         except requests.exceptions.RequestException as e:
-            print(f"Error: {str(e)}")
+            print(f"Error with chess API: {str(e)}")
+            evals.append(None)
+            next_moves.append(None)
+        except Exception as e:
+            print(f"Error evaluating position: {str(e)}")
+            evals.append(None)
+            next_moves.append(None)
 
     # Interactive Viewer
     index = 0
@@ -391,24 +559,27 @@ def main():
 
         if show_next:
             next_move = next_moves[index]
-            from_square = next_move[:2]
-            to_square = next_move[2:]
-            board_img_with_eval = draw_arrow(board_img_with_eval, from_square, to_square)
+            if next_move:  # Only draw arrow if we have a next move
+                from_square = next_move[:2]
+                to_square = next_move[2:]
+                board_img_with_eval = draw_arrow(board_img_with_eval, from_square, to_square)
 
-        cv2.putText(board_img_with_eval, f"Eval: {eval}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
-        cv2.putText(board_img, fen, (10,30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0,255,0), 2)
+        if eval is not None:  # Only show eval if we have one
+            cv2.putText(board_img_with_eval, f"Eval: {eval}", (10, 30), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+        cv2.putText(board_img_with_eval, fen, (10, 60), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+
         cv2.imshow("Virtual Chessboard Viewer", board_img_with_eval)
         
-
-        # cv2.imshow("Virtual Chessboard Viewer", board_img)
         key = cv2.waitKey(0)
-        if key == ord('q'): # Quit
+        if key == ord('q'):  # Quit
             break
-        elif key == ord('n') or key == 83: # 'n' or right arrow
+        elif key == ord('n') or key == 83:  # 'n' or right arrow
             index = min(index + 1, len(fen_states)-1)
-        elif key == ord('p') or key == 81: # 'p' or left arrow
+        elif key == ord('p') or key == 81:  # 'p' or left arrow
             index = max(index - 1, 0)
-        elif key == ord('m'):
+        elif key == ord('m'):  # Toggle next move display
             show_next = not show_next
 
     cv2.destroyAllWindows()
