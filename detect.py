@@ -69,6 +69,7 @@ def divide_into_squares(warped_image, expanded_warped, board_size=8):
     
     # Calculate different padding sizes for vertical and horizontal
     regular_vertical_padding = int(square_h * 0.25)    # 50% padding upward
+    downward_padding = int(square_h * 0.15)           # 15% padding downward
     regular_horizontal_padding = int(square_w * 0.3)  # 20% padding sideways
     border_vertical_padding = int(square_h * 0.25)    # 35% padding upward for border
     border_horizontal_padding = int(square_w * 0.25)  # 15% padding sideways for border
@@ -77,27 +78,23 @@ def divide_into_squares(warped_image, expanded_warped, board_size=8):
     for i in range(board_size):
         row = []
         for j in range(board_size):
-            # Determine if this is a border square
             is_border = (i == 0 or i == board_size-1 or j == 0 or j == board_size-1)
             
-            # Calculate base coordinates for this square
             y1 = i * square_h
             x1 = j * square_w
             y2 = (i + 1) * square_h
             x2 = (j + 1) * square_w
             
-            # Select the appropriate image and padding
             source_img = expanded_warped if is_border else warped_image
             vert_padding = border_vertical_padding if is_border else regular_vertical_padding
             horiz_padding = border_horizontal_padding if is_border else regular_horizontal_padding
             
-            # Apply different padding amounts for vertical and horizontal
-            padded_x1 = max(0, x1 - horiz_padding)  # Less left padding
-            padded_x2 = min(w, x2 + horiz_padding)  # Less right padding
-            padded_y1 = max(0, y1 - vert_padding)   # More top padding
-            padded_y2 = y2                          # No bottom padding
+            # Apply paddings
+            padded_x1 = max(0, x1 - horiz_padding)
+            padded_x2 = min(w, x2 + horiz_padding)
+            padded_y1 = max(0, y1 - vert_padding)
+            padded_y2 = min(h, y2 + downward_padding)  # Add downward padding
             
-            # Extract square from appropriate source
             square = source_img[padded_y1:padded_y2, padded_x1:padded_x2]
             row.append(square)
             
