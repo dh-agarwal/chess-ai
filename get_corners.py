@@ -1,6 +1,6 @@
 import cv2
 
-image = cv2.imread('train_images/1.png')
+image = cv2.imread('game_images/game_2/1.png')
 points = []
 
 def capture_points(event, x, y, flags, param):
@@ -11,7 +11,9 @@ def capture_points(event, x, y, flags, param):
         
         if len(points) == 4:
             cv2.destroyAllWindows()
-            print("Selected Points:", points)
+            print("Selected Points:")
+            for p in points:
+                print(f"        [{p[0]}, {p[1]}],")
 
 cv2.imshow("Select Corners", image)
 cv2.setMouseCallback("Select Corners", capture_points)
@@ -24,6 +26,7 @@ cv2.destroyAllWindows()
 
 if len(points) == 4:
     print("The selected corner points are:")
-    print(points)
+    for p in points:
+        print(f"        [{p[0]}, {p[1]}],")
 else:
     print("You did not select exactly 4 points.")
