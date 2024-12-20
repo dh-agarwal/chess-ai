@@ -12,6 +12,6 @@ We propose a pipeline that takes in a video with a top-down view of two humans p
 **Run**
 - `python3 detect.py`
 
-# Demo
+## Demo
 
 [YouTube Demo](https://www.youtube.com/watch?v=9WMdKxHMAhI)
