@@ -22,6 +22,7 @@ class RandomRotation:
 transform = transforms.Compose([
     transforms.Resize((64, 64)),
     transforms.RandomHorizontalFlip(),
+    transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1),  # Added color jitter
     RandomRotation(),
     transforms.ToTensor(),
     transforms.Normalize(mean=[0.51054407, 0.4892153,  0.46805718], std=[0.51054407, 0.4892153,  0.46805718])
@@ -104,16 +105,11 @@ class ChessPieceClassifier(nn.Module):
 import torch.optim as optim
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 
-def train_model(model, train_loader, val_loader, num_epochs=20):
+def train_model(model, train_loader, val_loader, num_epochs=40):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
     criterion = nn.CrossEntropyLoss()
-    optimizer = optim.Adam(model.parameters(), lr=0.005)
-    scheduler = ReduceLROnPlateau(optimizer, mode='min', patience=3, factor=0.1)
-    
-    best_val_loss = float('inf')
-    patience = 5
-    patience_counter = 0
+    optimizer = optim.Adam(model.parameters(), lr=3e-4)
     
     train_losses = []  # List to store training losses
     val_losses = []    # List to store validation losses
@@ -146,6 +142,9 @@ def train_model(model, train_loader, val_loader, num_epochs=20):
         val_loss = 0.0
         correct = 0
         total = 0
+        num_classes = 13
+        class_correct = [0] * num_classes  # Track correct predictions per class
+        class_total = [0] * num_classes    # Track total predictions per class
         
         with torch.no_grad():
             for inputs, labels in val_loader:
@@ -156,30 +155,48 @@ def train_model(model, train_loader, val_loader, num_epochs=20):
                 _, predicted = outputs.max(1)
                 total += labels.size(0)
                 correct += predicted.eq(labels).sum().item()
+                
+                # Update class-wise statistics
+                for i in range(labels.size(0)):
+                    label = labels[i].item()
+                    class_total[label] += 1
+                    class_correct[label] += predicted[i].eq(labels[i]).item()
         
         val_loss = val_loss / len(val_loader)
         val_losses.append(val_loss)  # Append validation loss
         val_acc = 100. * correct / total
+        
+        # Calculate and print class-wise accuracy
+        class_accuracies = [100. * class_correct[i] / class_total[i] if class_total[i] > 0 else 0 for i in range(num_classes)]
         
         # Print epoch statistics
         print(f'Epoch [{epoch+1}/{num_epochs}]')
         print(f'Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.2f}%')
         print(f'Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.2f}%')
         
-        # Learning rate scheduling
-        scheduler.step(val_loss)
+        if (epoch + 1) % 10 == 0:
+            model_save_path = f"chess_piece_classifier_epoch_{epoch + 1}.pth"
+            torch.save(model.state_dict(), model_save_path)
+            print(f'Model saved to {model_save_path}')
+            
+            # Plot and save class-wise validation accuracy
+            plt.figure(figsize=(10, 5))
+            bars = plt.bar(range(num_classes), class_accuracies, tick_label=[f'Class {i}' for i in range(num_classes)])
+            plt.title(f'Validation Accuracy by Class at Epoch {epoch + 1}')
+            plt.xlabel('Class')
+            plt.ylabel('Accuracy (%)')
+            plt.ylim(0, 100)
+            
+            # Add accuracy values on top of each bar
+            for bar, correct, total in zip(bars, class_correct, class_total):
+                height = bar.get_height()
+                plt.text(bar.get_x() + bar.get_width()/2., height,
+                         f'{correct}/{total}', ha='center', va='bottom')
+            
+            plt.savefig(f'val_accuracy_epoch_{epoch + 1}.png')
+            plt.close()
         
-        # Early stopping
-        if val_loss < best_val_loss:
-            best_val_loss = val_loss
-            patience_counter = 0
-            # Save best model
-            torch.save(model.state_dict(), 'best_chess_model.pth')
-        else:
-            patience_counter += 1
-            if patience_counter >= patience:
-                print("Early stopping triggered")
-                break
+        # Learning rate scheduling
 
     # Plotting the loss functions
     plt.figure(figsize=(10, 5))
